@@ -1,4 +1,4 @@
-* Traceroute Visualization Tool (WIP)
+# Traceroute Visualization Tool (WIP)
 
 ``` sh
 traceroute vnexpress.net | rust-tracervis

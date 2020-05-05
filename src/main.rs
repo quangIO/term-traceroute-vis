@@ -1,8 +1,8 @@
-use futures::channel::mpsc::Sender;
 use futures::future::join_all;
 use reqwest::Client;
-use std::io::{self, BufRead, BufReader};
-// use termion::{event::Key, input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
+use std::io::{self, BufRead};
+use std::sync::mpsc::{self, Sender};
+use termion::{input::{MouseTerminal, TermRead}, screen::AlternateScreen, event::Key};
 use tui::{
     backend::TermionBackend,
     layout::{Constraint, Direction, Layout},
@@ -14,7 +14,7 @@ use tui::{
     Terminal,
 };
 
-#[derive(Debug, serde::Deserialize, Default)]
+#[derive(Debug, serde::Deserialize)]
 struct IpInfo {
     ip: String,
     latitude: f64,
@@ -77,27 +77,39 @@ async fn process(line: String, sender: &Sender<IpInfo>, client: &Client) -> () {
         Ok(r) => r,
         _ => return (),
     };
-    // println!("{:?}", response);
-    let mut sender = sender.clone();
-    sender.try_send(response).unwrap();
+    sender.send(response).unwrap();
 }
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let client = reqwest::Client::new();
     let stdin = std::io::stdin();
-    let reader = BufReader::new(stdin);
 
     let stdout = io::stderr();
-    // let stdout = MouseTerminal::from(stdout);
-    // let stdout = AlternateScreen::from(stdout);
+    let stdout = MouseTerminal::from(stdout);
+    let stdout = AlternateScreen::from(stdout);
     let backend = TermionBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    let (tx, mut rx) = futures::channel::mpsc::channel::<IpInfo>(64);
+    let (tx, rx) = mpsc::channel();
+
+    let handle = std::thread::spawn(move || {
+        let mut ip_infos = vec![];
+        draw_ui(&mut terminal, &ip_infos);
+        for ip in rx {
+            ip_infos.push(ip);
+            draw_ui(&mut terminal, &ip_infos);
+        }
+        let stdin = termion::get_tty().unwrap();
+        for event in stdin.keys() {
+            if event.unwrap() == Key::Char('q') {
+               return;
+            }
+        }
+    });
 
     let mut tasks = vec![];
-    for line in reader.lines().skip(1) {
+    for line in stdin.lock().lines().skip(1) {
         let line = match line {
             Ok(a) => a,
             _ => continue,
@@ -106,14 +118,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     let _ = join_all(tasks).await;
-    let mut ip_infos = vec![];
-
-    while let Some(ip) = match rx.try_next() {
-        Ok(a) => a,
-        _ => None,
-    } {
-        ip_infos.push(ip);
-    }
-    draw_ui(&mut terminal, &ip_infos);
+    drop(tx);
+    handle.join().unwrap();
     Ok(())
 }

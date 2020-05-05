@@ -1,8 +1,12 @@
-use futures::future::join_all;
 use reqwest::Client;
 use std::io::{self, BufRead};
 use std::sync::mpsc::{self, Sender};
-use termion::{input::{MouseTerminal, TermRead}, screen::AlternateScreen, event::Key};
+use termion::{
+    event::Key,
+    input::{MouseTerminal, TermRead},
+    raw::IntoRawMode,
+    screen::AlternateScreen,
+};
 use tui::{
     backend::TermionBackend,
     layout::{Constraint, Direction, Layout},
@@ -55,7 +59,7 @@ fn draw_ui<T: tui::backend::Backend>(terminal: &mut Terminal<T>, ip_infos: &Vec<
         .unwrap();
 }
 
-async fn process(line: String, sender: &Sender<IpInfo>, client: &Client) -> () {
+async fn process(line: String, sender: Sender<IpInfo>, client: Client) -> () {
     let mut s = line.trim().split_whitespace();
     let _id = s.next();
     let _host = s.next();
@@ -85,7 +89,7 @@ async fn main() -> std::io::Result<()> {
     let client = reqwest::Client::new();
     let stdin = std::io::stdin();
 
-    let stdout = io::stderr();
+    let stdout = io::stdout().into_raw_mode()?;
     let stdout = MouseTerminal::from(stdout);
     let stdout = AlternateScreen::from(stdout);
     let backend = TermionBackend::new(stdout);
@@ -103,21 +107,21 @@ async fn main() -> std::io::Result<()> {
         let stdin = termion::get_tty().unwrap();
         for event in stdin.keys() {
             if event.unwrap() == Key::Char('q') {
-               return;
+                return;
             }
         }
     });
 
-    let mut tasks = vec![];
+    
     for line in stdin.lock().lines().skip(1) {
         let line = match line {
             Ok(a) => a,
             _ => continue,
         };
-        tasks.push(process(line, &tx, &client));
+        let tx = tx.clone();
+        let client = client.clone();
+        tokio::spawn(process(line, tx, client));
     }
-
-    let _ = join_all(tasks).await;
     drop(tx);
     handle.join().unwrap();
     Ok(())

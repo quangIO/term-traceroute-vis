@@ -17,6 +17,7 @@ use tui::{
     },
     Terminal,
 };
+use std::net::Ipv4Addr;
 
 #[derive(Debug, serde::Deserialize)]
 struct IpInfo {
@@ -30,7 +31,7 @@ struct IpInfo {
     country: Option<String>,
 }
 
-fn draw_ui<T: tui::backend::Backend>(terminal: &mut Terminal<T>, ip_infos: &Vec<IpInfo>) {
+fn draw_ui<T: tui::backend::Backend>(terminal: &mut Terminal<T>, ip_infos: &[IpInfo]) {
     terminal
         .draw(|mut f| {
             let chunks = Layout::default()
@@ -59,27 +60,52 @@ fn draw_ui<T: tui::backend::Backend>(terminal: &mut Terminal<T>, ip_infos: &Vec<
         .unwrap();
 }
 
-async fn process(line: String, sender: Sender<IpInfo>, client: Client) -> () {
+fn is_local_ip(ip: &str) -> bool {
+    let ip: Ipv4Addr = match ip.parse() {
+        Ok(x) => x,
+        Err(_) => {
+            Ipv4Addr::from(0)
+        }
+    };
+
+    let ip = ip.octets().iter().fold(0usize, |acc, &octet| {
+        (acc << 8) | octet as usize
+    });
+    match ip {
+        0 |
+        167772160..=184549375 |
+        3232235520..=3232301055 |
+        2130706432..=2147483647 |
+        2851995648..=2852061183 |
+        2886729728..=2887778303 |
+        3758096384..=4026531839 => true,
+        _ => false,
+    }
+}
+
+async fn process(line: String, sender: Sender<IpInfo>, client: Client) {
     let mut s = line.trim().split_whitespace();
     let _id = s.next();
     let _host = s.next();
     let ip = s.next().unwrap();
     if ip == "*" {
-        return ();
+        return;
     }
     let ip = &ip[1..ip.len() - 1];
+    let ip = if is_local_ip(ip) { "" } else { ip };
 
     let response = client
-        .get(("https://www.iplocate.io/api/lookup/".to_string() + &ip).as_str())
+        .get(("https://www.iplocate.io/api/lookup/".to_string() + ip).as_str())
         .send()
         .await;
+
     let response = match response {
         Ok(r) => r,
-        _ => return (),
+        _ => return,
     };
     let response: IpInfo = match response.json().await {
         Ok(r) => r,
-        _ => return (),
+        _ => return,
     };
     sender.send(response).unwrap();
 }
@@ -97,7 +123,7 @@ async fn main() -> std::io::Result<()> {
 
     let (tx, rx) = mpsc::channel();
 
-    let handle = std::thread::spawn(move || {
+    let handle = tokio::spawn(async move {
         let mut ip_infos = vec![];
         draw_ui(&mut terminal, &ip_infos);
         for ip in rx {
@@ -111,8 +137,6 @@ async fn main() -> std::io::Result<()> {
             }
         }
     });
-
-    
     for line in stdin.lock().lines().skip(1) {
         let line = match line {
             Ok(a) => a,
@@ -123,6 +147,6 @@ async fn main() -> std::io::Result<()> {
         tokio::spawn(process(line, tx, client));
     }
     drop(tx);
-    handle.join().unwrap();
+    handle.await?;
     Ok(())
 }
